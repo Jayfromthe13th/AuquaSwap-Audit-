@@ -221,6 +221,29 @@ fun WHEN_exploit_overflow_revert(admin: &signer, user: &signer) acquires TokenCa
     market::add_liquidity<BLU>(admin, admin_blu);
 }
 ```
+***Spec (MP)***
+``` rust
+module AquaSwap::LiquidityPool {
+
+  ///
+    spec module {
+        pragma verify = true;
+        pragma aborts_if_is_strict;
+    }
+
+    spec calculate_lp_token_amount_internal(aqua_amount: u64, ocean_amount: u64) {
+        aborts_if (aqua_amount == 0 || ocean_amount == 0);
+        aborts_if (aqua_amount as u128) * (ocean_amount as u128) > u64::MAX as u128;
+        ensures result == calculate_lp_token_amount_internal(aqua_amount, ocean_amount);
+    }
+
+    spec calculate_protocol_fees(lp_tokens: u64, fee_rate: u64) {
+        aborts_if (lp_tokens == 0 || fee_rate == 0);
+        aborts_if (lp_tokens as u128) * (fee_rate as u128) > u64::MAX as u128;
+        ensures result == calculate_protocol_fees(lp_tokens, fee_rate);
+    }
+}
+```
 
 **Correct Implementation**:  
 - Cast operands to `u128` before multiplication and ensure the result fits within `u64` limits to prevent overflow errors.
